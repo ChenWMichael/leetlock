@@ -1,6 +1,3 @@
-const params = new URLSearchParams(window.location.search)
-const from = params.get('from')
-
 const DIFF_LABEL = { easy: 'Easy', medium: 'Med', hard: 'Hard' }
 
 function diffBadge(difficulty) {
@@ -32,26 +29,20 @@ function render(problems, completed) {
   const btn = document.getElementById('continue')
   btn.disabled = !allDone
   if (allDone) {
-    btn.onclick = () => {
-      try {
-        const url = new URL(from)
-        if (url.protocol === 'http:' || url.protocol === 'https:') {
-          window.location.href = from
-          return
-        }
-      } catch {}
-      window.location.href = 'about:newtab'
-    }
+    // Go back to wherever the user was trying to navigate before being blocked.
+    // declarativeNetRequest replaces the navigation, so history.back() returns
+    // to the previous page (or the new-tab page if none).
+    btn.onclick = () => history.back()
   }
 }
 
-browser.storage.local.get(['todayProblems', 'completedToday']).then(data => {
+chrome.storage.local.get(['todayProblems', 'completedToday']).then(data => {
   render(data.todayProblems || [], data.completedToday || [])
 })
 
 // Live-update when a problem is solved while this page is open
-browser.storage.onChanged.addListener(() => {
-  browser.storage.local.get(['todayProblems', 'completedToday']).then(data => {
+chrome.storage.onChanged.addListener(() => {
+  chrome.storage.local.get(['todayProblems', 'completedToday']).then(data => {
     render(data.todayProblems || [], data.completedToday || [])
   })
 })

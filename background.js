@@ -1,35 +1,82 @@
 // NC_150, BLIND_75, PROBLEM_SETS, PROBLEM_ALL_MAP are defined in problems.js
+importScripts('problems.js')
 
-const blockedPageBase = browser.runtime.getURL("blocked.html")
+const RULE_ID_OFFSET = 1
 
 let bannedWebsites = []
 let activeSet = 'nc150'
 let wasUnlockedToday = false
+let dailyState = { date: null, problems: [], completed: [] }
+let streakState = { count: 0, lastCompletedDate: null }
+
+// ── Blocking rules (declarativeNetRequest) ────────────────────────────────────
+// Reads everything it needs from storage so it's safe to call from a fresh
+// service worker wake-up where in-memory state hasn't been restored yet.
+
+async function updateBlockingRules() {
+  const [stored, existingRules] = await Promise.all([
+    chrome.storage.local.get(['bannedWebsites', 'unlockedToday', 'todayProblems', 'completedToday']),
+    chrome.declarativeNetRequest.getDynamicRules(),
+  ])
+
+  const sites = stored.bannedWebsites ?? bannedWebsites
+  const problems = stored.todayProblems || []
+  const completed = stored.completedToday || []
+  const unlocked = stored.unlockedToday ||
+    (problems.length > 0 && problems.every(p => completed.includes(p.slug)))
+
+  const existingIds = existingRules.map(r => r.id)
+
+  if (!unlocked && sites.length > 0) {
+    const newRules = sites.map((site, i) => ({
+      id: RULE_ID_OFFSET + i,
+      priority: 1,
+      action: { type: 'redirect', redirect: { extensionPath: '/blocked.html' } },
+      condition: { requestDomains: [site], resourceTypes: ['main_frame'] },
+    }))
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: existingIds,
+      addRules: newRules,
+    })
+  } else {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: existingIds,
+      addRules: [],
+    })
+  }
+}
 
 async function loadBannedWebsites() {
-  const data = await browser.storage.local.get('bannedWebsites')
+  const data = await chrome.storage.local.get('bannedWebsites')
   if (data.bannedWebsites === undefined) {
-    bannedWebsites = ['x.com', 'youtube.com']
-    await browser.storage.local.set({ bannedWebsites })
+    bannedWebsites = [
+      'x.com',
+      'youtube.com',
+      'facebook.com',
+      'instagram.com',
+      'reddit.com',
+      'tiktok.com',
+      'twitch.tv',
+    ]
+    await chrome.storage.local.set({ bannedWebsites })
   } else {
     bannedWebsites = data.bannedWebsites
   }
 }
 
-function isHostnameBanned(hostname) {
-  return bannedWebsites.some(banned =>
-    hostname === banned || hostname.endsWith('.' + banned)
-  )
-}
-
-browser.storage.onChanged.addListener(changes => {
-  if (changes.bannedWebsites) bannedWebsites = changes.bannedWebsites.newValue || []
+chrome.storage.onChanged.addListener(async changes => {
+  if (changes.bannedWebsites) {
+    bannedWebsites = changes.bannedWebsites.newValue || []
+    await updateBlockingRules()
+  }
   if (changes.customSet) PROBLEM_SETS.custom.problems = changes.customSet.newValue || []
   if (changes.activeSet) {
     activeSet = changes.activeSet.newValue || 'nc150'
-    initDailyState()
+    await initDailyState()
   }
 })
+
+// ── Problem fetching ──────────────────────────────────────────────────────────
 
 async function fetchProblem(slug) {
   const resp = await fetch('https://leetcode.com/graphql', {
@@ -48,18 +95,22 @@ async function fetchProblem(slug) {
   return { title: q.title, slug, difficulty: q.difficulty.toLowerCase() }
 }
 
-browser.runtime.onMessage.addListener(message => {
+// Chrome requires returning true from onMessage to keep the channel open for
+// async sendResponse — returning a Promise is a Firefox-only behavior.
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === 'reset-progress') {
     initDailyState()
     return
   }
   if (message?.type === 'fetch-problem') {
-    return fetchProblem(message.slug)
+    fetchProblem(message.slug)
+      .then(sendResponse)
+      .catch(() => sendResponse({ error: true }))
+    return true // keep message channel open for async response
   }
 })
 
-let dailyState = { date: null, problems: [], completed: [] }
-let streakState = { count: 0, lastCompletedDate: null }
+// ── Daily state ───────────────────────────────────────────────────────────────
 
 function getTodayStr() {
   return new Date().toLocaleDateString('en-CA')
@@ -76,8 +127,6 @@ function sampleN(arr, n) {
   return [...arr].sort(() => Math.random() - 0.5).slice(0, n)
 }
 
-// Enumerate all {e, m, h} combos where 1*e + 2*m + 3*h === target,
-// filtered to only those achievable from the available pool counts.
 function pickProblems(pool, target) {
   const easy = pool.filter(p => p.difficulty === 'easy')
   const medium = pool.filter(p => p.difficulty === 'medium')
@@ -120,7 +169,7 @@ function generateProblems(setProblems, cycleKey, data, target) {
 
 async function initDailyState() {
   const today = getTodayStr()
-  const data = await browser.storage.local.get([
+  const data = await chrome.storage.local.get([
     'todayDate', 'allCompleted', 'pointTarget',
     'streakCount', 'streakLastCompletedDate',
     'activeSet', 'unlockedToday',
@@ -146,15 +195,12 @@ async function initDailyState() {
   const setHasProblems = (data[setProblemsKey] || []).length > 0
 
   if (!newDay && setHasProblems) {
-    // Same day, this set's problems already generated — restore without regenerating
     wasUnlockedToday = data.unlockedToday || false
     const problems = data[setProblemsKey]
     const completed = data[setCompletedKey] || []
     dailyState = { date: today, problems, completed }
-    // Mirror to todayProblems/completedToday so popup and blocked.html see the right set
-    await browser.storage.local.set({ todayProblems: problems, completedToday: completed })
+    await chrome.storage.local.set({ todayProblems: problems, completedToday: completed })
   } else {
-    // New day OR first visit to this set today — generate problems once and store them
     if (newDay) wasUnlockedToday = false
     else wasUnlockedToday = data.unlockedToday || false
 
@@ -171,7 +217,6 @@ async function initDailyState() {
     if (newDay) {
       updates.todayDate = today
       updates.unlockedToday = false
-      // Clear other sets' stale per-day assignments
       for (const key of Object.keys(PROBLEM_SETS)) {
         if (key !== activeSet) {
           updates[`todayProblems_${key}`] = null
@@ -183,12 +228,14 @@ async function initDailyState() {
       const picked = new Set(problems.map(p => p.slug))
       updates[cycleKey] = cycleRemaining.filter(s => !picked.has(s))
     }
-    await browser.storage.local.set(updates)
+    await chrome.storage.local.set(updates)
   }
 
   if (dailyState.date === today && isUnlocked()) {
     await updateStreakIfNeeded(today)
   }
+
+  await updateBlockingRules()
 }
 
 function isUnlocked() {
@@ -199,13 +246,10 @@ function isUnlocked() {
 
 async function updateStreakIfNeeded(today) {
   if (streakState.lastCompletedDate === today) return
-
   const yesterdayStr = shiftLocalDate(today, -1)
-
   streakState.count = streakState.lastCompletedDate === yesterdayStr ? streakState.count + 1 : 1
   streakState.lastCompletedDate = today
-
-  await browser.storage.local.set({
+  await chrome.storage.local.set({
     streakCount: streakState.count,
     streakLastCompletedDate: streakState.lastCompletedDate,
   })
@@ -218,49 +262,39 @@ function recordSolved(slug) {
   const assignedProblem = dailyState.problems.find(p => p.slug === slug)
   if (assignedProblem && !dailyState.completed.includes(slug)) {
     dailyState.completed.push(slug)
-    browser.storage.local.set({
+    chrome.storage.local.set({
       completedToday: dailyState.completed,
       [`completedToday_${activeSet}`]: dailyState.completed,
     })
     if (isUnlocked()) {
       wasUnlockedToday = true
-      browser.storage.local.set({ unlockedToday: true })
+      chrome.storage.local.set({ unlockedToday: true })
       updateStreakIfNeeded(dailyState.date)
+      updateBlockingRules()
     }
   }
 
-  browser.storage.local.get('allCompleted').then(data => {
+  chrome.storage.local.get('allCompleted').then(data => {
     const all = data.allCompleted || []
     if (!all.find(p => p.slug === slug)) {
       all.push({ title: problem.title, slug, difficulty: problem.difficulty })
-      browser.storage.local.set({ allCompleted: all })
+      chrome.storage.local.set({ allCompleted: all })
     }
   })
 }
 
-loadBannedWebsites()
-initDailyState()
+// ── Startup ───────────────────────────────────────────────────────────────────
 
-browser.webRequest.onBeforeRequest.addListener(
-  (details) => {
-    const today = getTodayStr()
-    if (dailyState.date !== today) {
-      initDailyState()
-    }
-    const url = new URL(details.url)
-    if (isHostnameBanned(url.hostname) && !isUnlocked()) {
-      const blockedPage = blockedPageBase + '?from=' + encodeURIComponent(details.url)
-      return { redirectUrl: blockedPage }
-    }
-    return {}
-  },
-  { urls: ["<all_urls>"], types: ["main_frame"] },
-  ["blocking"]
-)
+loadBannedWebsites().then(() => initDailyState())
 
-browser.webRequest.onBeforeRequest.addListener(
+// ── LeetCode submission detection ─────────────────────────────────────────────
+// Non-blocking listener — intercepts the page's own GraphQL call, re-issues it
+// from the extension context (with credentials) to read the authenticated response.
+
+chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    if (details.originUrl?.startsWith('moz-extension://')) return
+    if (details.initiator?.startsWith('chrome-extension://') ||
+        details.initiator?.startsWith('moz-extension://')) return
     if (!details.requestBody) return
     const raw = details.requestBody.raw
     if (!raw) return
@@ -276,22 +310,22 @@ browser.webRequest.onBeforeRequest.addListener(
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
     })
-    .then(r => r.json())
-    .then(json => {
-      const submission = json?.data?.submissionDetails
-      if (!submission) return
-      if (submission.statusCode !== 10) return
-      const slug = submission.question.titleSlug
+      .then(r => r.json())
+      .then(json => {
+        const submission = json?.data?.submissionDetails
+        if (!submission) return
+        if (submission.statusCode !== 10) return
+        const slug = submission.question.titleSlug
 
-      const today = getTodayStr()
-      if (dailyState.date !== today) {
-        initDailyState().then(() => recordSolved(slug))
-      } else {
-        recordSolved(slug)
-      }
-    })
+        const today = getTodayStr()
+        if (dailyState.date !== today) {
+          initDailyState().then(() => recordSolved(slug))
+        } else {
+          recordSolved(slug)
+        }
+      })
   },
   { urls: ['*://leetcode.com/graphql*'], types: ['xmlhttprequest'] },
   ['requestBody']

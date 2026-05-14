@@ -4,29 +4,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**leetlock** is a Firefox WebExtension (Manifest V2) that blocks distracting websites until the user completes a LeetCode problem for the day.
+**leetlock** is a Chrome Extension (Manifest V3) that blocks distracting websites until the user completes a LeetCode problem for the day.
 
 ## Loading and Testing
 
-No build step — load the extension directly in Firefox:
-1. Navigate to `about:debugging#/runtime/this-firefox`
-2. Click "Load Temporary Add-on" and select `manifest.json`
-3. Changes to JS files require reloading the extension from the same page; HTML/CSS changes may hot-reload
+No build step — load the extension directly in Chrome:
+1. Navigate to `chrome://extensions`
+2. Enable "Developer mode" (toggle in the top-right)
+3. Click "Load unpacked" and select the project directory
+4. Changes to JS files require clicking the reload icon on the extension card; HTML/CSS changes may hot-reload
 
 ## Architecture
 
 The extension has two main runtime contexts:
 
-**`background.js`** — the persistent background script (service worker equivalent in MV2). All core logic lives here:
-- Intercepts all `main_frame` requests and redirects to `blocked.html` if the hostname is in `bannedWebsites`
-- Intercepts XHR requests to `leetcode.com/graphql`, re-fetches them with cookies, and parses `submissionDetails` responses — a `statusCode` of `10` indicates a successful submission
-- Stores solved problem slugs in `browser.storage.local` under key `completedToday` (string array)
+**`background.js`** — the service worker (MV3). All core logic lives here:
+- Manages blocked site rules via `chrome.declarativeNetRequest.updateDynamicRules()`, redirecting `main_frame` requests to `blocked.html` when the user hasn't unlocked for the day
+- Intercepts XHR requests to `leetcode.com/graphql` via `chrome.webRequest.onBeforeRequest` (non-blocking), re-fetches them with cookies, and parses `submissionDetails` responses — a `statusCode` of `10` indicates a successful submission
+- Stores state in `chrome.storage.local`: `completedToday` (solved slugs for today), `todayProblems` (today's assigned problems), `unlockedToday` (boolean), `allCompleted` (full history), streak data, and per-set variants
+- Loaded via `importScripts('problems.js')` since it runs as a service worker
 
-**`popup.html` / `popup.js`** — the browser action popup, currently minimal scaffolding. Reads/writes to `browser.storage.local` key `v`.
+**`popup.html` / `popup.js`** — the browser action popup. Reads/writes `chrome.storage.local` and sends messages to the background for async operations (e.g., `fetch-problem`).
+
+**`blocked.html` / `blocked.js`** — shown when a banned site is visited and the user hasn't completed their problems. Displays today's problems and a "Continue" button (enabled when all are solved) that calls `history.back()` to return to the original destination.
 
 ## Key Details
 
-- Uses `browser.*` API (Firefox), not `chrome.*` — these are not interchangeable
-- Manifest V2 is required for `webRequestBlocking` (synchronous request interception); migrating to MV3 would require switching to `declarativeNetRequest`, which changes how blocking works significantly
-- The LeetCode detection works by intercepting the GraphQL request body (requires `requestBody` permission) and re-issuing it from the background context with `credentials: 'include'` to access the authenticated response
-- The blocked page (`blocked.html`) is currently a stub — the intended UX is to show it when a banned site is visited before any LeetCode problem is solved that day; the logic to gate unblocking on `completedToday` is not yet wired up
+- Uses `chrome.*` API throughout — do not use `browser.*`
+- Manifest V3 uses `declarativeNetRequest` for blocking (not `webRequestBlocking`); rule updates are async via `updateDynamicRules`
+- The service worker can be killed and restarted at any time by Chrome; all persistent state must live in `chrome.storage.local`, not in-memory variables (in-memory vars are only used as a cache restored on startup)
+- `chrome.runtime.onMessage` listeners must return `true` to keep the channel open for async `sendResponse` — returning a Promise is Firefox-only behavior
+- The LeetCode detection works by intercepting the GraphQL request body (requires `requestBody` permission in `webRequest`) and re-issuing it from the extension context with `credentials: 'include'` to read the authenticated response

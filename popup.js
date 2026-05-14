@@ -61,7 +61,7 @@ function render(problems, completed, all, activeSet) {
 }
 
 function loadAndRender() {
-  browser.storage.local.get(['todayProblems', 'completedToday', 'allCompleted', 'streakCount', 'activeSet', 'customSet']).then(data => {
+  chrome.storage.local.get(['todayProblems', 'completedToday', 'allCompleted', 'streakCount', 'activeSet', 'customSet']).then(data => {
     PROBLEM_SETS.custom.problems = data.customSet || []
     const problems = data.todayProblems || []
     const completed = data.completedToday || []
@@ -77,7 +77,7 @@ function loadAndRender() {
 
 loadAndRender()
 
-browser.storage.onChanged.addListener(() => {
+chrome.storage.onChanged.addListener(() => {
   loadAndRender()
 })
 
@@ -110,7 +110,7 @@ function renderSetSelector(activeSet) {
   })
 }
 
-browser.storage.local.get(['activeSet', 'customSet']).then(data => {
+chrome.storage.local.get(['activeSet', 'customSet']).then(data => {
   currentActiveSet = data.activeSet || 'nc150'
   PROBLEM_SETS.custom.problems = data.customSet || []
   renderSetSelector(currentActiveSet)
@@ -122,7 +122,7 @@ document.getElementById('set-selector').addEventListener('click', e => {
   if (!btn || btn.dataset.set === currentActiveSet) return
   currentActiveSet = btn.dataset.set
   renderSetSelector(currentActiveSet)
-  browser.storage.local.set({ activeSet: currentActiveSet })
+  chrome.storage.local.set({ activeSet: currentActiveSet })
 })
 
 // ── Custom problem set ───────────────────────────────────────────────────────
@@ -179,11 +179,12 @@ function addCustomProblem() {
   }
   showCustomStatus('Fetching…', false)
   document.getElementById('custom-add').disabled = true
-  browser.runtime.sendMessage({ type: 'fetch-problem', slug })
+  chrome.runtime.sendMessage({ type: 'fetch-problem', slug })
     .then(problem => {
+      if (!problem || problem.error) throw new Error('Problem not found')
       const updated = [...PROBLEM_SETS.custom.problems, problem]
       PROBLEM_SETS.custom.problems = updated
-      return browser.storage.local.set({ customSet: updated })
+      return chrome.storage.local.set({ customSet: updated })
     })
     .then(() => {
       input.value = ''
@@ -211,7 +212,7 @@ document.getElementById('custom-list').addEventListener('click', e => {
   if (!btn) return
   const updated = PROBLEM_SETS.custom.problems.filter(p => p.slug !== btn.dataset.slug)
   PROBLEM_SETS.custom.problems = updated
-  browser.storage.local.set({ customSet: updated }).then(() => {
+  chrome.storage.local.set({ customSet: updated }).then(() => {
     renderCustomList(updated)
     renderSetSelector(currentActiveSet)
   })
@@ -226,7 +227,7 @@ function updatePtsDisplay() {
   document.getElementById('pts-inc').disabled = pointTarget >= MAX_PTS
 }
 
-browser.storage.local.get('pointTarget').then(data => {
+chrome.storage.local.get('pointTarget').then(data => {
   pointTarget = data.pointTarget || 3
   updatePtsDisplay()
 })
@@ -235,23 +236,23 @@ document.getElementById('pts-dec').addEventListener('click', () => {
   if (pointTarget <= MIN_PTS) return
   pointTarget--
   updatePtsDisplay()
-  browser.storage.local.set({ pointTarget })
+  chrome.storage.local.set({ pointTarget })
 })
 
 document.getElementById('pts-inc').addEventListener('click', () => {
   if (pointTarget >= MAX_PTS) return
   pointTarget++
   updatePtsDisplay()
-  browser.storage.local.set({ pointTarget })
+  chrome.storage.local.set({ pointTarget })
 })
 
 // ── Unmark individual problem ────────────────────────────────────────────────
 document.getElementById('history').addEventListener('click', e => {
   const btn = e.target.closest('.remove-btn')
   if (!btn) return
-  browser.storage.local.get('allCompleted').then(data => {
+  chrome.storage.local.get('allCompleted').then(data => {
     const all = (data.allCompleted || []).filter(p => p.slug !== btn.dataset.slug)
-    browser.storage.local.set({ allCompleted: all }).then(loadAndRender)
+    chrome.storage.local.set({ allCompleted: all }).then(loadAndRender)
   })
 })
 
@@ -271,7 +272,7 @@ function renderUrlList(urls) {
   })
 }
 
-browser.storage.local.get('bannedWebsites').then(data => {
+chrome.storage.local.get('bannedWebsites').then(data => {
   renderUrlList(data.bannedWebsites || [])
 })
 
@@ -285,11 +286,11 @@ function addUrl() {
   } catch { return }
   if (!hostname) return
   input.value = ''
-  browser.storage.local.get('bannedWebsites').then(data => {
+  chrome.storage.local.get('bannedWebsites').then(data => {
     const urls = data.bannedWebsites || []
     if (urls.includes(hostname)) return
     urls.push(hostname)
-    browser.storage.local.set({ bannedWebsites: urls }).then(() => renderUrlList(urls))
+    chrome.storage.local.set({ bannedWebsites: urls }).then(() => renderUrlList(urls))
   })
 }
 
@@ -301,9 +302,9 @@ document.getElementById('url-input').addEventListener('keydown', e => {
 document.getElementById('url-list').addEventListener('click', e => {
   const btn = e.target.closest('.url-remove')
   if (!btn) return
-  browser.storage.local.get('bannedWebsites').then(data => {
+  chrome.storage.local.get('bannedWebsites').then(data => {
     const urls = (data.bannedWebsites || []).filter(u => u !== btn.dataset.url)
-    browser.storage.local.set({ bannedWebsites: urls }).then(() => renderUrlList(urls))
+    chrome.storage.local.set({ bannedWebsites: urls }).then(() => renderUrlList(urls))
   })
 })
 
@@ -327,7 +328,7 @@ resetBtn.addEventListener('click', () => {
     resetPending = false
     resetBtn.textContent = 'Reset all progress'
     resetBtn.classList.remove('confirm')
-    browser.storage.local.set({
+    chrome.storage.local.set({
       allCompleted: [],
       completedToday: [],
       todayDate: null,
@@ -344,7 +345,7 @@ resetBtn.addEventListener('click', () => {
       unlockedToday: false,
       streakCount: 0,
       streakLastCompletedDate: null,
-    }).then(() => browser.runtime.sendMessage({ type: 'reset-progress' }))
+    }).then(() => chrome.runtime.sendMessage({ type: 'reset-progress' }))
       .then(loadAndRender)
   }
 })
