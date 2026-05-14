@@ -2,6 +2,9 @@
 importScripts('problems.js')
 
 const RULE_ID_OFFSET = 1
+const POINT_VALUE = { easy: 1, medium: 2, hard: 3 }
+const SR_BASE_INTERVAL = { easy: 3, medium: 2, hard: 1 }
+const SR_MULTIPLIER = { easy: 2.5, medium: 2.0, hard: 1.8 }
 
 let bannedWebsites = []
 let activeSet = 'nc150'
@@ -151,20 +154,38 @@ function pickProblems(pool, target) {
 }
 
 function generateProblems(setProblems, cycleKey, data, target) {
+  const today = getTodayStr()
+  const srData = data.srData || {}
+
+  const dueReviews = setProblems.filter(p => {
+    const sr = srData[p.slug]
+    return sr && sr.nextReview <= today
+  })
+  const reviewSlugs = new Set(dueReviews.map(p => p.slug))
+
+  const pickedReviews = pickProblems(dueReviews, target)
+    .map(p => ({ ...p, isReview: true }))
+  const reviewPoints = pickedReviews.reduce((sum, p) => sum + (POINT_VALUE[p.difficulty] || 1), 0)
+  const remaining = Math.max(0, target - reviewPoints)
+
   const doneSlugs = new Set((data.allCompleted || []).map(p => p.slug))
-  const firstPassRemaining = setProblems.filter(p => !doneSlugs.has(p.slug))
+  const firstPassRemaining = setProblems.filter(p => !doneSlugs.has(p.slug) && !reviewSlugs.has(p.slug))
 
-  let pool, cycleRemaining = null
+  let newProblems = []
+  let cycleRemaining = null
 
-  if (firstPassRemaining.length > 0) {
-    pool = firstPassRemaining
-  } else {
-    cycleRemaining = data[cycleKey] || []
-    if (cycleRemaining.length === 0) cycleRemaining = setProblems.map(p => p.slug)
-    pool = setProblems.filter(p => cycleRemaining.includes(p.slug))
+  if (remaining > 0) {
+    if (firstPassRemaining.length > 0) {
+      newProblems = pickProblems(firstPassRemaining, remaining)
+    } else {
+      cycleRemaining = data[cycleKey] || []
+      if (cycleRemaining.length === 0) cycleRemaining = setProblems.map(p => p.slug)
+      const cyclePool = setProblems.filter(p => cycleRemaining.includes(p.slug) && !reviewSlugs.has(p.slug))
+      newProblems = pickProblems(cyclePool, remaining)
+    }
   }
 
-  return { problems: pickProblems(pool, target), cycleRemaining }
+  return { problems: [...pickedReviews, ...newProblems], cycleRemaining }
 }
 
 async function initDailyState() {
@@ -174,6 +195,7 @@ async function initDailyState() {
     'streakCount', 'streakLastCompletedDate',
     'activeSet', 'unlockedToday',
     'customSet',
+    'srData',
     'cycleRemaining_blind75', 'cycleRemaining_nc150', 'cycleRemaining_custom',
     'todayProblems_blind75', 'completedToday_blind75',
     'todayProblems_nc150', 'completedToday_nc150',
@@ -274,12 +296,28 @@ function recordSolved(slug) {
     }
   }
 
-  chrome.storage.local.get('allCompleted').then(data => {
+  chrome.storage.local.get(['allCompleted', 'srData']).then(data => {
     const all = data.allCompleted || []
+    const srData = data.srData || {}
+    const updates = {}
+
     if (!all.find(p => p.slug === slug)) {
       all.push({ title: problem.title, slug, difficulty: problem.difficulty })
-      chrome.storage.local.set({ allCompleted: all })
+      updates.allCompleted = all
     }
+
+    const existing = srData[slug]
+    const base = SR_BASE_INTERVAL[problem.difficulty] || 1
+    const mult = SR_MULTIPLIER[problem.difficulty] || 2.0
+    const newInterval = existing ? Math.round(existing.interval * mult) : base
+    srData[slug] = {
+      interval: newInterval,
+      nextReview: shiftLocalDate(getTodayStr(), newInterval),
+      reps: (existing?.reps || 0) + 1,
+    }
+    updates.srData = srData
+
+    chrome.storage.local.set(updates)
   })
 }
 

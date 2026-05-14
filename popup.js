@@ -28,7 +28,7 @@ function render(problems, completed, all, activeSet) {
     div.innerHTML =
       `<span class="icon">${done ? '✓' : '○'}</span>` +
       `<div class="info">` +
-        `<div class="title">${problem.title} ${diffBadge(problem.difficulty)}</div>` +
+        `<div class="title">${problem.title} ${diffBadge(problem.difficulty)}${problem.isReview ? ' <span class="review-badge">↻ review</span>' : ''}</div>` +
         `<a class="link" href="https://leetcode.com/problems/${problem.slug}/" target="_blank">Open on LeetCode ↗</a>` +
       `</div>`
     problemsEl.appendChild(div)
@@ -345,6 +345,7 @@ resetBtn.addEventListener('click', () => {
       unlockedToday: false,
       streakCount: 0,
       streakLastCompletedDate: null,
+      srData: {},
     }).then(() => chrome.runtime.sendMessage({ type: 'reset-progress' }))
       .then(loadAndRender)
   }
