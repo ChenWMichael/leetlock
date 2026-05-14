@@ -21,5 +21,13 @@
       "resources": ["blocked.html", "blocked.js"],
       "matches": ["<all_urls>"]
     }
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://leetcode.com/problems/*"],
+      "js": ["leetcode-reset.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    }
   ]
 }
